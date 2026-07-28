@@ -69,7 +69,7 @@ jobs:
           Write-Host "              RDP DETAILS"
           Write-Host "=============================================="
           Write-Host "Address   : $addr"
-          Write-Host "Username  : runneradmin"
+          Write-Host "Username  : runneradminabdul"
           Write-Host "Password  : $env:RDP_PASSWORD"
           Write-Host "=============================================="
           Write-Host ""
