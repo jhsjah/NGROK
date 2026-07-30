@@ -2,6 +2,11 @@ name: RDP-ngrok
 
 on:
   workflow_dispatch:
+    inputs:
+      password:
+        description: 'RDP Password (leave empty for random)'
+        required: false
+        default: ''
 
 jobs:
   rdp:
@@ -11,30 +16,42 @@ jobs:
     steps:
       - name: Enable and Configure RDP
         run: |
+          Write-Host "=== Configuring RDP ===" -ForegroundColor Cyan
+
           # Enable RDP
           Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0 -Force
-          
-          # Disable NLA (important)
+
+          # Disable NLA + Force SecurityLayer = RDP (important for protocol errors)
           Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "UserAuthentication" -Value 0 -Force
           Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "SecurityLayer" -Value 0 -Force
 
-          # Firewall rules
+          # Firewall
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
           netsh advfirewall firewall delete rule name="Allow RDP" 2>$null
           netsh advfirewall firewall add rule name="Allow RDP" dir=in action=allow protocol=TCP localport=3389
 
-          # Restart RDP service
-          Restart-Service TermService -Force
-          Start-Sleep -Seconds 8
+          # Restart service
+          Restart-Service TermService -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 10
 
-          # Check if port 3389 is listening
-          $listening = netstat -an | Select-String ":3389"
-          Write-Host "Port 3389 status:"
-          Write-Host $listening
+          # Verify port is listening
+          $listening = netstat -an | Select-String ":3389.*LISTENING"
+          if ($listening) {
+            Write-Host "Port 3389 is listening" -ForegroundColor Green
+          } else {
+            Write-Host "WARNING: Port 3389 is NOT listening" -ForegroundColor Yellow
+          }
 
       - name: Set runneradmin Password
         run: |
-          $password = "Pass@" + (Get-Random -Minimum 100000 -Maximum 999999)
+          if ("${{ github.event.inputs.password }}" -ne "") {
+            \( password = " \){{ github.event.inputs.password }}"
+            Write-Host "Using custom password"
+          } else {
+            $password = "Pass@" + (Get-Random -Minimum 100000 -Maximum 999999)
+            Write-Host "Generated random password"
+          }
+
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
           Set-LocalUser -Name "runneradmin" -Password $securePass
 
@@ -43,41 +60,58 @@ jobs:
 
       - name: Install ngrok
         run: |
-          Invoke-WebRequest -Uri "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" -OutFile "$env:TEMP\ngrok.zip"
+          Write-Host "Downloading ngrok..." -ForegroundColor Cyan
+          $ngrokUrl = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"
+          Invoke-WebRequest -Uri $ngrokUrl -OutFile "$env:TEMP\ngrok.zip" -UseBasicParsing
           Expand-Archive "$env:TEMP\ngrok.zip" -DestinationPath "$env:TEMP" -Force
+          Write-Host "ngrok installed"
 
       - name: Start ngrok + Show Credentials
         run: |
+          # Add authtoken
           & "$env:TEMP\ngrok.exe" config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
 
-          # Start ngrok in background
-          Start-Process -FilePath "$env:TEMP\ngrok.exe" -ArgumentList "tcp","3389" -WindowStyle Hidden
+          # Start tunnel in background
+          Start-Process -FilePath "$env:TEMP\ngrok.exe" -ArgumentList "tcp","3389","--log=stdout" -WindowStyle Hidden
 
-          # Wait for tunnel
-          Start-Sleep -Seconds 20
+          Write-Host "Waiting for ngrok tunnel..." -ForegroundColor Yellow
+          $maxTries = 15
+          $addr = $null
 
-          try {
-              $tunnels = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels"
-              $addr = $tunnels.tunnels[0].public_url -replace "tcp://",""
-          } catch {
-              Write-Error "ngrok tunnel not ready"
-              exit 1
+          for ($i = 1; $i -le $maxTries; $i++) {
+            Start-Sleep -Seconds 4
+            try {
+              $tunnels = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -TimeoutSec 5
+              if ($tunnels.tunnels.Count -gt 0) {
+                $addr = $tunnels.tunnels[0].public_url -replace "tcp://",""
+                break
+              }
+            } catch {
+              Write-Host "Attempt $i/$maxTries - tunnel not ready yet..."
+            }
+          }
+
+          if (-not $addr) {
+            Write-Error "Failed to get ngrok tunnel address after $maxTries attempts"
+            exit 1
           }
 
           Write-Host ""
-          Write-Host "=============================================="
-          Write-Host "              RDP DETAILS"
-          Write-Host "=============================================="
+          Write-Host "==============================================" -ForegroundColor Green
+          Write-Host "              RDP DETAILS" -ForegroundColor Green
+          Write-Host "==============================================" -ForegroundColor Green
           Write-Host "Address   : $addr"
           Write-Host "Username  : runneradmin"
           Write-Host "Password  : $env:RDP_PASSWORD"
-          Write-Host "=============================================="
+          Write-Host "==============================================" -ForegroundColor Green
           Write-Host ""
+          Write-Host "Copy the Address above and connect with Remote Desktop" -ForegroundColor Cyan
 
       - name: Keep Alive
         run: |
-          Write-Host "RDP is running... Do not cancel the workflow."
+          Write-Host "RDP is running. Do not cancel this workflow." -ForegroundColor Yellow
+          Write-Host "Session will stay active for up to 6 hours." -ForegroundColor Yellow
           while ($true) {
-              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Active"
-              Start-Sleep -Seconds 300
+            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Still active..."
+            Start-Sleep -Seconds 300
           }
