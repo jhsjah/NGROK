@@ -21,7 +21,7 @@ jobs:
           # Enable RDP
           Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0 -Force
 
-          # Disable NLA + Force SecurityLayer = RDP (important for protocol errors)
+          # Disable NLA + Force SecurityLayer = RDP (helps avoid 0x1104 error)
           Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "UserAuthentication" -Value 0 -Force
           Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "SecurityLayer" -Value 0 -Force
 
@@ -44,8 +44,10 @@ jobs:
 
       - name: Set runneradmin Password
         run: |
-          if ("${{ github.event.inputs.password }}" -ne "") {
-            \( password = " \){{ github.event.inputs.password }}"
+          \( inputPass = " \){{ github.event.inputs.password }}"
+          
+          if ($inputPass -and $inputPass.Trim() -ne "") {
+            $password = $inputPass
             Write-Host "Using custom password"
           } else {
             $password = "Pass@" + (Get-Random -Minimum 100000 -Maximum 999999)
