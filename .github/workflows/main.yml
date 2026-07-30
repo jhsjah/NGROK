@@ -21,7 +21,7 @@ jobs:
           # Enable RDP
           Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0 -Force
 
-          # Disable NLA + Force SecurityLayer = RDP (helps avoid 0x1104 error)
+          # Disable NLA + Force SecurityLayer = RDP
           Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "UserAuthentication" -Value 0 -Force
           Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "SecurityLayer" -Value 0 -Force
 
@@ -34,7 +34,7 @@ jobs:
           Restart-Service TermService -Force -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 10
 
-          # Verify port is listening
+          # Verify port
           $listening = netstat -an | Select-String ":3389.*LISTENING"
           if ($listening) {
             Write-Host "Port 3389 is listening" -ForegroundColor Green
@@ -43,11 +43,11 @@ jobs:
           }
 
       - name: Set runneradmin Password
+        env:
+          INPUT_PASSWORD: ${{ github.event.inputs.password }}
         run: |
-          \( inputPass = " \){{ github.event.inputs.password }}"
-          
-          if ($inputPass -and $inputPass.Trim() -ne "") {
-            $password = $inputPass
+          if ($env:INPUT_PASSWORD -and $env:INPUT_PASSWORD.Trim() -ne "") {
+            $password = $env:INPUT_PASSWORD
             Write-Host "Using custom password"
           } else {
             $password = "Pass@" + (Get-Random -Minimum 100000 -Maximum 999999)
@@ -70,10 +70,8 @@ jobs:
 
       - name: Start ngrok + Show Credentials
         run: |
-          # Add authtoken
           & "$env:TEMP\ngrok.exe" config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
 
-          # Start tunnel in background
           Start-Process -FilePath "$env:TEMP\ngrok.exe" -ArgumentList "tcp","3389","--log=stdout" -WindowStyle Hidden
 
           Write-Host "Waiting for ngrok tunnel..." -ForegroundColor Yellow
@@ -94,7 +92,7 @@ jobs:
           }
 
           if (-not $addr) {
-            Write-Error "Failed to get ngrok tunnel address after $maxTries attempts"
+            Write-Error "Failed to get ngrok tunnel address"
             exit 1
           }
 
@@ -103,6 +101,19 @@ jobs:
           Write-Host "              RDP DETAILS" -ForegroundColor Green
           Write-Host "==============================================" -ForegroundColor Green
           Write-Host "Address   : $addr"
+          Write-Host "Username  : runneradmin"
+          Write-Host "Password  : $env:RDP_PASSWORD"
+          Write-Host "==============================================" -ForegroundColor Green
+          Write-Host ""
+          Write-Host "Copy the Address above and connect with Remote Desktop" -ForegroundColor Cyan
+
+      - name: Keep Alive
+        run: |
+          Write-Host "RDP is running. Do not cancel this workflow." -ForegroundColor Yellow
+          while ($true) {
+            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Still active..."
+            Start-Sleep -Seconds 300
+          }          Write-Host "Address   : $addr"
           Write-Host "Username  : runneradmin"
           Write-Host "Password  : $env:RDP_PASSWORD"
           Write-Host "==============================================" -ForegroundColor Green
