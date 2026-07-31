@@ -2,11 +2,6 @@ name: RDP-ngrok
 
 on:
   workflow_dispatch:
-    inputs:
-      password:
-        description: 'RDP Password (leave empty for random)'
-        required: false
-        default: ''
 
 jobs:
   rdp:
@@ -14,117 +9,325 @@ jobs:
     timeout-minutes: 360
 
     steps:
+
+      # ============================================================
+      # 1. ENABLE AND CONFIGURE RDP
+      # ============================================================
       - name: Enable and Configure RDP
+        shell: powershell
         run: |
-          Write-Host "=== Configuring RDP ===" -ForegroundColor Cyan
+
+          Write-Host "=============================================="
+          Write-Host "        ENABLING REMOTE DESKTOP"
+          Write-Host "=============================================="
 
           # Enable RDP
-          Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty `
+            -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" `
+            -Name "fDenyTSConnections" `
+            -Value 0 `
+            -Force
 
-          # Disable NLA + Force SecurityLayer = RDP
-          Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "SecurityLayer" -Value 0 -Force
+          # Keep normal Windows RDP security settings.
+          # Do not disable NLA/security layer.
 
-          # Firewall
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
-          netsh advfirewall firewall delete rule name="Allow RDP" 2>$null
-          netsh advfirewall firewall add rule name="Allow RDP" dir=in action=allow protocol=TCP localport=3389
+          # Enable built-in Remote Desktop firewall rules if available
+          Enable-NetFirewallRule `
+            -DisplayGroup "Remote Desktop" `
+            -ErrorAction SilentlyContinue
 
-          # Restart service
-          Restart-Service TermService -Force -ErrorAction SilentlyContinue
+          # Remove our custom rule if it already exists
+          netsh advfirewall firewall delete rule name="Allow RDP 3389" 2>$null
+
+          # Create explicit RDP firewall rule
+          netsh advfirewall firewall add rule `
+            name="Allow RDP 3389" `
+            dir=in `
+            action=allow `
+            protocol=TCP `
+            localport=3389
+
+          # Restart RDP service
+          Restart-Service TermService -Force
+
           Start-Sleep -Seconds 10
 
-          # Verify port
-          $listening = netstat -an | Select-String ":3389.*LISTENING"
-          if ($listening) {
-            Write-Host "Port 3389 is listening" -ForegroundColor Green
-          } else {
-            Write-Host "WARNING: Port 3389 is NOT listening" -ForegroundColor Yellow
-          }
+          Write-Host ""
+          Write-Host "=============================================="
+          Write-Host "        RDP SERVICE STATUS"
+          Write-Host "=============================================="
 
-      - name: Set runneradmin Password
-        env:
-          INPUT_PASSWORD: ${{ github.event.inputs.password }}
+          Get-Service TermService
+
+          Write-Host ""
+          Write-Host "=============================================="
+          Write-Host "        RDP REGISTRY STATUS"
+          Write-Host "=============================================="
+
+          Get-ItemProperty `
+            "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" `
+            -Name fDenyTSConnections
+
+          Write-Host ""
+          Write-Host "=============================================="
+          Write-Host "        RDP PORT 3389"
+          Write-Host "=============================================="
+
+          netstat -ano | findstr ":3389"
+
+          Write-Host ""
+          Write-Host "=============================================="
+          Write-Host "        LOCAL PORT TEST"
+          Write-Host "=============================================="
+
+          Test-NetConnection 127.0.0.1 -Port 3389
+
+
+      # ============================================================
+      # 2. SHOW FIREWALL CONFIGURATION
+      # ============================================================
+      - name: Show Windows Firewall Configuration
+        shell: powershell
         run: |
-          if ($env:INPUT_PASSWORD -and $env:INPUT_PASSWORD.Trim() -ne "") {
-            $password = $env:INPUT_PASSWORD
-            Write-Host "Using custom password"
-          } else {
-            $password = "Pass@" + (Get-Random -Minimum 100000 -Maximum 999999)
-            Write-Host "Generated random password"
-          }
 
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          Set-LocalUser -Name "runneradmin" -Password $securePass
+          Write-Host "=============================================="
+          Write-Host "        FIREWALL PROFILES"
+          Write-Host "=============================================="
 
-          "RDP_PASSWORD=$password" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Get-NetFirewallProfile |
+            Format-Table `
+              Name,
+              Enabled,
+              DefaultInboundAction,
+              DefaultOutboundAction `
+              -AutoSize
+
+          Write-Host ""
+          Write-Host "=============================================="
+          Write-Host "        REMOTE DESKTOP FIREWALL RULES"
+          Write-Host "=============================================="
+
+          Get-NetFirewallRule |
+            Where-Object {
+              $_.DisplayName -like "*Remote Desktop*" -or
+              $_.DisplayName -like "*RDP*"
+            } |
+            Format-Table `
+              DisplayName,
+              Enabled,
+              Direction,
+              Action `
+              -AutoSize
+
+          Write-Host ""
+          Write-Host "=============================================="
+          Write-Host "        TCP 3389 INBOUND RULES"
+          Write-Host "=============================================="
+
+          Get-NetFirewallRule |
+            Where-Object {
+              $_.Enabled -eq "True" -and
+              $_.Direction -eq "Inbound"
+            } |
+            Get-NetFirewallPortFilter |
+            Where-Object {
+              $_.Protocol -eq "TCP" -and
+              $_.LocalPort -eq "3389"
+            } |
+            Format-Table `
+              Protocol,
+              LocalPort `
+              -AutoSize
+
+          Write-Host ""
+          Write-Host "=============================================="
+          Write-Host "        NETSH FIREWALL STATUS"
+          Write-Host "=============================================="
+
+          netsh advfirewall show allprofiles
+
+
+      # ============================================================
+      # 3. SET RDP USER PASSWORD
+      # ============================================================
+      - name: Set runneradmin Password
+        shell: powershell
+        run: |
+
+          $password = "Pass@" + `
+            (Get-Random -Minimum 100000 -Maximum 999999)
+
+          $securePass = ConvertTo-SecureString `
+            $password `
+            -AsPlainText `
+            -Force
+
+          Set-LocalUser `
+            -Name "runneradmin" `
+            -Password $securePass
+
+          "RDP_PASSWORD=$password" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
+
           Write-Host "Password set successfully"
 
+
+      # ============================================================
+      # 4. INSTALL NGROK
+      # ============================================================
       - name: Install ngrok
+        shell: powershell
         run: |
-          Write-Host "Downloading ngrok..." -ForegroundColor Cyan
-          $ngrokUrl = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"
-          Invoke-WebRequest -Uri $ngrokUrl -OutFile "$env:TEMP\ngrok.zip" -UseBasicParsing
-          Expand-Archive "$env:TEMP\ngrok.zip" -DestinationPath "$env:TEMP" -Force
-          Write-Host "ngrok installed"
 
+          Invoke-WebRequest `
+            -Uri "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" `
+            -OutFile "$env:TEMP\ngrok.zip"
+
+          Expand-Archive `
+            "$env:TEMP\ngrok.zip" `
+            -DestinationPath "$env:TEMP" `
+            -Force
+
+          Write-Host "ngrok installed."
+
+
+      # ============================================================
+      # 5. START NGROK
+      # ============================================================
       - name: Start ngrok + Show Credentials
+        shell: powershell
         run: |
-          & "$env:TEMP\ngrok.exe" config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
 
-          Start-Process -FilePath "$env:TEMP\ngrok.exe" -ArgumentList "tcp","3389","--log=stdout" -WindowStyle Hidden
+          & "$env:TEMP\ngrok.exe" `
+            config add-authtoken `
+            "${{ secrets.NGROK_AUTH_TOKEN }}"
 
-          Write-Host "Waiting for ngrok tunnel..." -ForegroundColor Yellow
-          $maxTries = 15
-          $addr = $null
+          Write-Host "Starting ngrok..."
 
-          for ($i = 1; $i -le $maxTries; $i++) {
-            Start-Sleep -Seconds 4
-            try {
-              $tunnels = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -TimeoutSec 5
-              if ($tunnels.tunnels.Count -gt 0) {
-                $addr = $tunnels.tunnels[0].public_url -replace "tcp://",""
-                break
-              }
-            } catch {
-              Write-Host "Attempt $i/$maxTries - tunnel not ready yet..."
+          Start-Process `
+            -FilePath "$env:TEMP\ngrok.exe" `
+            -ArgumentList "tcp","3389" `
+            -WindowStyle Hidden
+
+          Write-Host "Waiting for ngrok..."
+
+          Start-Sleep -Seconds 20
+
+          Write-Host ""
+          Write-Host "=============================================="
+          Write-Host "        NGROK STATUS"
+          Write-Host "=============================================="
+
+          try {
+
+            $tunnels = Invoke-RestMethod `
+              -Uri "http://127.0.0.1:4040/api/tunnels"
+
+            if ($null -eq $tunnels.tunnels) {
+              throw "No ngrok tunnels found."
             }
-          }
 
-          if (-not $addr) {
-            Write-Error "Failed to get ngrok tunnel address"
+            if ($tunnels.tunnels.Count -eq 0) {
+              throw "ngrok is running but no tunnel exists."
+            }
+
+            $addr = $tunnels.tunnels[0].public_url `
+              -replace "tcp://",""
+
+            Write-Host ""
+            Write-Host "=============================================="
+            Write-Host "              RDP DETAILS"
+            Write-Host "=============================================="
+            Write-Host ""
+            Write-Host "Address  : $addr"
+            Write-Host "Username : runneradmin"
+            Write-Host "Password : $env:RDP_PASSWORD"
+            Write-Host ""
+            Write-Host "=============================================="
+            Write-Host ""
+
+          }
+          catch {
+
+            Write-Host ""
+            Write-Host "=============================================="
+            Write-Host "        NGROK ERROR"
+            Write-Host "=============================================="
+            Write-Host ""
+
+            Write-Host $_
+
+            Write-Host ""
+            Write-Host "ngrok process:"
+            Get-Process ngrok -ErrorAction SilentlyContinue
+
+            Write-Host ""
+            Write-Host "ngrok API:"
+            try {
+              Invoke-RestMethod `
+                -Uri "http://127.0.0.1:4040/api/tunnels"
+            }
+            catch {
+              Write-Host "ngrok API is not available."
+            }
+
             exit 1
           }
 
-          Write-Host ""
-          Write-Host "==============================================" -ForegroundColor Green
-          Write-Host "              RDP DETAILS" -ForegroundColor Green
-          Write-Host "==============================================" -ForegroundColor Green
-          Write-Host "Address   : $addr"
-          Write-Host "Username  : runneradmin"
-          Write-Host "Password  : $env:RDP_PASSWORD"
-          Write-Host "==============================================" -ForegroundColor Green
-          Write-Host ""
-          Write-Host "Copy the Address above and connect with Remote Desktop" -ForegroundColor Cyan
 
-      - name: Keep Alive
+      # ============================================================
+      # 6. FINAL CONNECTIVITY CHECK
+      # ============================================================
+      - name: Final RDP Connectivity Check
+        shell: powershell
         run: |
-          Write-Host "RDP is running. Do not cancel this workflow." -ForegroundColor Yellow
-          while ($true) {
-            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Still active..."
-            Start-Sleep -Seconds 300
-          }          Write-Host "Address   : $addr"
-          Write-Host "Username  : runneradmin"
-          Write-Host "Password  : $env:RDP_PASSWORD"
-          Write-Host "==============================================" -ForegroundColor Green
-          Write-Host ""
-          Write-Host "Copy the Address above and connect with Remote Desktop" -ForegroundColor Cyan
 
+          Write-Host "=============================================="
+          Write-Host "        FINAL RDP CHECK"
+          Write-Host "=============================================="
+
+          Write-Host ""
+          Write-Host "TermService:"
+          Get-Service TermService
+
+          Write-Host ""
+          Write-Host "Port 3389:"
+          netstat -ano | findstr ":3389"
+
+          Write-Host ""
+          Write-Host "Local TCP test:"
+          Test-NetConnection `
+            127.0.0.1 `
+            -Port 3389
+
+          Write-Host ""
+          Write-Host "Firewall rule:"
+          netsh advfirewall firewall show rule `
+            name="Allow RDP 3389"
+
+
+      # ============================================================
+      # 7. KEEP RUNNER ALIVE
+      # ============================================================
       - name: Keep Alive
+        shell: powershell
         run: |
-          Write-Host "RDP is running. Do not cancel this workflow." -ForegroundColor Yellow
-          Write-Host "Session will stay active for up to 6 hours." -ForegroundColor Yellow
+
+          Write-Host ""
+          Write-Host "=============================================="
+          Write-Host "        RDP IS RUNNING"
+          Write-Host "=============================================="
+          Write-Host ""
+          Write-Host "Do not cancel the workflow."
+          Write-Host ""
+
           while ($true) {
-            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Still active..."
+
+            Write-Host `
+              "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] RDP Active"
+
             Start-Sleep -Seconds 300
           }
