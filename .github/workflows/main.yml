@@ -207,7 +207,8 @@ jobs:
         run: |
 
           $ngrok = "$env:TEMP\ngrok\ngrok.exe"
-          $ngrokLog = "$env:TEMP\ngrok.log"
+          $stdoutLog = "$env:TEMP\ngrok-stdout.log"
+          $stderrLog = "$env:TEMP\ngrok-stderr.log"
 
           Write-Host "=============================================="
           Write-Host "        CONFIGURING NGROK"
@@ -225,15 +226,13 @@ jobs:
           Write-Host "        STARTING NGROK"
           Write-Host "=============================================="
 
-          if (Test-Path $ngrokLog) {
-            Remove-Item $ngrokLog -Force
-          }
+          Remove-Item $stdoutLog, $stderrLog -Force -ErrorAction SilentlyContinue
 
           Start-Process `
             -FilePath $ngrok `
             -ArgumentList "tcp","3389","--log=stdout" `
-            -RedirectStandardOutput $ngrokLog `
-            -RedirectStandardError $ngrokLog `
+            -RedirectStandardOutput $stdoutLog `
+            -RedirectStandardError $stderrLog `
             -WindowStyle Hidden
 
           Write-Host "ngrok process started."
@@ -248,42 +247,52 @@ jobs:
           Write-Host "=============================================="
 
           Get-Process ngrok -ErrorAction SilentlyContinue |
-            Format-Table `
-              Id,
-              ProcessName,
-              StartTime `
-              -AutoSize
+            Format-Table Id, ProcessName, StartTime -AutoSize
 
           Write-Host ""
           Write-Host "=============================================="
           Write-Host "        NGROK LOCAL API"
           Write-Host "=============================================="
 
+          $tunnels = $null
+
           try {
 
-            $tunnels = Invoke-RestMethod `
-              -Uri "http://127.0.0.1:4040/api/tunnels"
+              $tunnels = Invoke-RestMethod `
+                -Uri "http://127.0.0.1:4040/api/tunnels"
 
-            $tunnels |
-              ConvertTo-Json -Depth 10
+              $tunnels |
+                ConvertTo-Json -Depth 10
 
           }
           catch {
 
-            Write-Host "Could not reach ngrok API."
-            Write-Host $_
+              Write-Host "Could not reach ngrok API."
+              Write-Host $_
           }
 
           Write-Host ""
           Write-Host "=============================================="
-          Write-Host "        NGROK LOG"
+          Write-Host "        NGROK STDOUT"
           Write-Host "=============================================="
 
-          if (Test-Path $ngrokLog) {
-            Get-Content $ngrokLog -Tail 100
+          if (Test-Path $stdoutLog) {
+              Get-Content $stdoutLog -Tail 100
           }
           else {
-            Write-Host "ngrok log file was not created."
+              Write-Host "No stdout log found."
+          }
+
+          Write-Host ""
+          Write-Host "=============================================="
+          Write-Host "        NGROK STDERR"
+          Write-Host "=============================================="
+
+          if (Test-Path $stderrLog) {
+              Get-Content $stderrLog -Tail 100
+          }
+          else {
+              Write-Host "No stderr log found."
           }
 
           Write-Host ""
@@ -293,59 +302,51 @@ jobs:
 
           try {
 
-            $tunnels = Invoke-RestMethod `
-              -Uri "http://127.0.0.1:4040/api/tunnels"
+              if ($null -eq $tunnels) {
+                  throw "Could not retrieve ngrok tunnel information."
+              }
 
-            if ($null -eq $tunnels.tunnels) {
-              throw "No tunnels returned by ngrok API."
-            }
+              if ($null -eq $tunnels.tunnels) {
+                  throw "No tunnels returned by ngrok API."
+              }
 
-            if ($tunnels.tunnels.Count -eq 0) {
-              throw "ngrok is running but no tunnel exists."
-            }
+              if ($tunnels.tunnels.Count -eq 0) {
+                  throw "ngrok is running but no tunnel exists."
+              }
 
-            $tunnel = $tunnels.tunnels[0]
+              $tunnel = $tunnels.tunnels[0]
 
-            $addr = $tunnel.public_url `
-              -replace "^tcp://",""
+              $addr = $tunnel.public_url -replace "^tcp://",""
 
-            Write-Host ""
-            Write-Host "=============================================="
-            Write-Host "              RDP DETAILS"
-            Write-Host "=============================================="
-            Write-Host ""
-            Write-Host "Address  : $addr"
-            Write-Host "Username : runneradmin"
-            Write-Host "Password : $env:RDP_PASSWORD"
-            Write-Host ""
-            Write-Host "=============================================="
-            Write-Host ""
+              Write-Host ""
+              Write-Host "=============================================="
+              Write-Host "              RDP DETAILS"
+              Write-Host "=============================================="
+              Write-Host ""
+              Write-Host "Address  : $addr"
+              Write-Host "Username : runneradmin"
+              Write-Host "Password : $env:RDP_PASSWORD"
+              Write-Host ""
+              Write-Host "=============================================="
+              Write-Host ""
 
           }
           catch {
 
-            Write-Host ""
-            Write-Host "=============================================="
-            Write-Host "        NGROK TUNNEL ERROR"
-            Write-Host "=============================================="
-            Write-Host ""
+              Write-Host ""
+              Write-Host "=============================================="
+              Write-Host "        NGROK TUNNEL ERROR"
+              Write-Host "=============================================="
+              Write-Host ""
 
-            Write-Host $_
+              Write-Host $_
 
-            Write-Host ""
-            Write-Host "Processes:"
-            Get-Process ngrok -ErrorAction SilentlyContinue
+              Write-Host ""
+              Write-Host "Processes:"
+              Get-Process ngrok -ErrorAction SilentlyContinue
 
-            Write-Host ""
-            Write-Host "Final ngrok log:"
-            if (Test-Path $ngrokLog) {
-              Get-Content $ngrokLog -Tail 200
-            }
-
-            exit 1
+              exit 1
           }
-
-
       # ============================================================
       # 6. FINAL RDP CONNECTIVITY CHECK
       # ============================================================
