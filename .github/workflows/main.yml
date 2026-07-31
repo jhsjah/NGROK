@@ -21,25 +21,22 @@ jobs:
           Write-Host "        ENABLING REMOTE DESKTOP"
           Write-Host "=============================================="
 
-          # Enable RDP
           Set-ItemProperty `
             -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" `
             -Name "fDenyTSConnections" `
             -Value 0 `
             -Force
 
-          # Keep normal Windows RDP security settings.
+          # Keep normal RDP security settings.
           # Do not disable NLA/security layer.
 
-          # Enable built-in Remote Desktop firewall rules if available
           Enable-NetFirewallRule `
             -DisplayGroup "Remote Desktop" `
             -ErrorAction SilentlyContinue
 
-          # Remove our custom rule if it already exists
-          netsh advfirewall firewall delete rule name="Allow RDP 3389" 2>$null
+          netsh advfirewall firewall delete rule `
+            name="Allow RDP 3389" 2>$null
 
-          # Create explicit RDP firewall rule
           netsh advfirewall firewall add rule `
             name="Allow RDP 3389" `
             dir=in `
@@ -47,7 +44,6 @@ jobs:
             protocol=TCP `
             localport=3389
 
-          # Restart RDP service
           Restart-Service TermService -Force
 
           Start-Sleep -Seconds 10
@@ -182,43 +178,117 @@ jobs:
         shell: powershell
         run: |
 
+          Write-Host "=============================================="
+          Write-Host "        INSTALLING NGROK"
+          Write-Host "=============================================="
+
+          $zip = "$env:TEMP\ngrok.zip"
+          $extract = "$env:TEMP\ngrok"
+
           Invoke-WebRequest `
             -Uri "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" `
-            -OutFile "$env:TEMP\ngrok.zip"
+            -OutFile $zip
 
           Expand-Archive `
-            "$env:TEMP\ngrok.zip" `
-            -DestinationPath "$env:TEMP" `
+            $zip `
+            -DestinationPath $extract `
             -Force
 
           Write-Host "ngrok installed."
 
+          & "$extract\ngrok.exe" version
+
 
       # ============================================================
-      # 5. START NGROK
+      # 5. START NGROK + DIAGNOSTICS
       # ============================================================
-      - name: Start ngrok + Show Credentials
+      - name: Start ngrok + Diagnostics
         shell: powershell
         run: |
 
-          & "$env:TEMP\ngrok.exe" `
-            config add-authtoken `
+          $ngrok = "$env:TEMP\ngrok\ngrok.exe"
+          $ngrokLog = "$env:TEMP\ngrok.log"
+
+          Write-Host "=============================================="
+          Write-Host "        CONFIGURING NGROK"
+          Write-Host "=============================================="
+
+          & $ngrok config add-authtoken `
             "${{ secrets.NGROK_AUTH_TOKEN }}"
 
-          Write-Host "Starting ngrok..."
-
-          Start-Process `
-            -FilePath "$env:TEMP\ngrok.exe" `
-            -ArgumentList "tcp","3389" `
-            -WindowStyle Hidden
-
-          Write-Host "Waiting for ngrok..."
-
-          Start-Sleep -Seconds 20
+          Write-Host ""
+          Write-Host "ngrok config:"
+          & $ngrok config check
 
           Write-Host ""
           Write-Host "=============================================="
-          Write-Host "        NGROK STATUS"
+          Write-Host "        STARTING NGROK"
+          Write-Host "=============================================="
+
+          if (Test-Path $ngrokLog) {
+            Remove-Item $ngrokLog -Force
+          }
+
+          Start-Process `
+            -FilePath $ngrok `
+            -ArgumentList "tcp","3389","--log=stdout" `
+            -RedirectStandardOutput $ngrokLog `
+            -RedirectStandardError $ngrokLog `
+            -WindowStyle Hidden
+
+          Write-Host "ngrok process started."
+
+          Write-Host ""
+          Write-Host "Waiting for ngrok..."
+          Start-Sleep -Seconds 15
+
+          Write-Host ""
+          Write-Host "=============================================="
+          Write-Host "        NGROK PROCESS"
+          Write-Host "=============================================="
+
+          Get-Process ngrok -ErrorAction SilentlyContinue |
+            Format-Table `
+              Id,
+              ProcessName,
+              StartTime `
+              -AutoSize
+
+          Write-Host ""
+          Write-Host "=============================================="
+          Write-Host "        NGROK LOCAL API"
+          Write-Host "=============================================="
+
+          try {
+
+            $tunnels = Invoke-RestMethod `
+              -Uri "http://127.0.0.1:4040/api/tunnels"
+
+            $tunnels |
+              ConvertTo-Json -Depth 10
+
+          }
+          catch {
+
+            Write-Host "Could not reach ngrok API."
+            Write-Host $_
+          }
+
+          Write-Host ""
+          Write-Host "=============================================="
+          Write-Host "        NGROK LOG"
+          Write-Host "=============================================="
+
+          if (Test-Path $ngrokLog) {
+            Get-Content $ngrokLog -Tail 100
+          }
+          else {
+            Write-Host "ngrok log file was not created."
+          }
+
+          Write-Host ""
+          Write-Host "=============================================="
+          Write-Host "        NGROK TUNNEL"
           Write-Host "=============================================="
 
           try {
@@ -227,15 +297,17 @@ jobs:
               -Uri "http://127.0.0.1:4040/api/tunnels"
 
             if ($null -eq $tunnels.tunnels) {
-              throw "No ngrok tunnels found."
+              throw "No tunnels returned by ngrok API."
             }
 
             if ($tunnels.tunnels.Count -eq 0) {
               throw "ngrok is running but no tunnel exists."
             }
 
-            $addr = $tunnels.tunnels[0].public_url `
-              -replace "tcp://",""
+            $tunnel = $tunnels.tunnels[0]
+
+            $addr = $tunnel.public_url `
+              -replace "^tcp://",""
 
             Write-Host ""
             Write-Host "=============================================="
@@ -254,24 +326,20 @@ jobs:
 
             Write-Host ""
             Write-Host "=============================================="
-            Write-Host "        NGROK ERROR"
+            Write-Host "        NGROK TUNNEL ERROR"
             Write-Host "=============================================="
             Write-Host ""
 
             Write-Host $_
 
             Write-Host ""
-            Write-Host "ngrok process:"
+            Write-Host "Processes:"
             Get-Process ngrok -ErrorAction SilentlyContinue
 
             Write-Host ""
-            Write-Host "ngrok API:"
-            try {
-              Invoke-RestMethod `
-                -Uri "http://127.0.0.1:4040/api/tunnels"
-            }
-            catch {
-              Write-Host "ngrok API is not available."
+            Write-Host "Final ngrok log:"
+            if (Test-Path $ngrokLog) {
+              Get-Content $ngrokLog -Tail 200
             }
 
             exit 1
@@ -279,7 +347,7 @@ jobs:
 
 
       # ============================================================
-      # 6. FINAL CONNECTIVITY CHECK
+      # 6. FINAL RDP CONNECTIVITY CHECK
       # ============================================================
       - name: Final RDP Connectivity Check
         shell: powershell
@@ -320,8 +388,6 @@ jobs:
           Write-Host "=============================================="
           Write-Host "        RDP IS RUNNING"
           Write-Host "=============================================="
-          Write-Host ""
-          Write-Host "Do not cancel the workflow."
           Write-Host ""
 
           while ($true) {
